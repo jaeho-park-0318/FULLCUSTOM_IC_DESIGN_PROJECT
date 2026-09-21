@@ -1,3 +1,4 @@
+# FULLCUSTOM_IC_DESIGN_PROJECT
 ## Project Motivation
 
 CNN convolution operations consist largely of repeated **Multiply-Accumulate (MAC)** and **Dot Product** operations.
