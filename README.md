@@ -1,1102 +1,550 @@
-# INT4 Dot Product Accelerator for CNN
+# Full-Custom IC Design
 
-## Full-Custom IC Design: Sequential MAC vs Parallel Dot Product Accelerator
+A Cadence Virtuoso design project spanning transistor-level CMOS cells, arithmetic circuits, sequential logic, and an unsigned INT4 dot-product accelerator for CNN workloads. The repository brings together schematics, physical layouts, simulation waveforms, and design notes.
 
-## 1. Project Overview
+The main architecture study compares a **sequential multiply–accumulate (MAC)** datapath with a **parallel four-term dot-product accelerator**.
 
-This project implements an **INT4 Dot Product Accelerator for CNN workloads** using a **Full-Custom IC Design methodology**.
+[Architecture](#architecture-overview) · [Top-Level Layout](#top-level-accelerator) · [MUL4](#4-bit-multiplier-mul4) · [Arithmetic Cells](#arithmetic-cells) · [Logic Cells](#cmos-logic-cells) · [Sequential Logic](#sequential-logic) · [Multiplexers](#multiplexers) · [PCell](#parameterized-cell-pcell)
 
-The main objective is to design and compare two architectures that perform the same 4-term dot-product operation:
+Images link directly to their original files. Click a schematic or layout to inspect its wiring at full resolution.
 
-- Sequential MAC
-- Parallel Dot Product Accelerator
-
-The target operation is:
+## Architecture Overview
 
 ```text
 Y = X0*W0 + X1*W1 + X2*W2 + X3*W3
+
+Xi, Wi : 4-bit unsigned operands
+Pi     : 8-bit product
+Y      : 10-bit dot-product result
 ```
 
-where each input `Xi` and weight `Wi` is represented as a **4-bit integer (INT4)**.
-
-The project includes:
-
-- Transistor-level schematic design
-- Pre-layout simulation
-- Full-custom layout
-- DRC verification
-- LVS verification
-- Parasitic extraction
-- Post-layout simulation
-- Architecture-level performance comparison
-
----
-
-## 2. Project Motivation
-
-CNN convolution operations consist largely of repeated **Multiply-Accumulate (MAC)** and **Dot Product** operations.
-
-For a 4-term dot product:
+Each product is at most 15 × 15 = 225. Summing four products gives a maximum of 900, so the accumulation and adder-tree datapaths use 10 bits. Multiplier outputs are zero-extended from 8 to 10 bits before addition.
 
 ```text
-Y = SUM(Xi*Wi), i = 0 to 3
+CMOS gates                         Storage and selection
+INV / NAND / NOR / AND / OR / XOR   Latches / DFF / MUX
+             |
+       Half adder / Full adder
+             |
+        +----+----------------+
+        |                     |
+       MUL4                 RCA10
+        |                     |
+        +----------+----------+
+                   |
+        +----------+------------------+
+        |                             |
+  Sequential MAC              Parallel dot product
+  MUL4 + RCA10 + REG10        4 x MUL4 + 3 x RCA10
 ```
 
-or equivalently:
+## Top-Level Accelerator
+
+The parallel accelerator computes four products concurrently and combines them with a two-stage adder tree. The first stage adds pairs of products; the second stage adds the two intermediate sums.
 
 ```text
-Y = X0*W0 + X1*W1 + X2*W2 + X3*W3
+X0, W0 --> MUL4 --> P0 --+
+                         +--> RCA10 --> S01 --+
+X1, W1 --> MUL4 --> P1 --+                     |
+                                               +--> RCA10 --> Y[9:0]
+X2, W2 --> MUL4 --> P2 --+                     |
+                         +--> RCA10 --> S23 --+
+X3, W3 --> MUL4 --> P3 --+
 ```
 
-the same arithmetic operation can be implemented using different hardware architectures.
+### Complete Layout
 
-A **Sequential MAC** reuses a single multiplier and accumulator over multiple clock cycles.
+The top-level layout shows four multiplier regions and the interconnecting adder datapath.
 
-A **Parallel Dot Product Accelerator** uses multiple multipliers simultaneously and combines their outputs through an adder tree.
+[![Complete INT4 dot-product accelerator layout](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT.png)](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT.png)
 
-The project therefore investigates the trade-off between:
+### Top-Level Schematic
+
+[![Four-multiplier dot-product accelerator schematic](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_SCHEMATIC.png)](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_SCHEMATIC.png)
+
+<details>
+<summary>Top-level layout dimensions and physical-verification screenshots</summary>
+
+**Layout dimensions**
+
+[![Accelerator layout dimensions](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT_SIZE.png)](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT_SIZE.png)
+
+**DRC view**
+
+[![Accelerator DRC screenshot](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT_DRC.png)](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT_DRC.png)
+
+**LVS view**
+
+[![Accelerator LVS screenshot](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT_LVS.png)](AI_semiconductor_design/DOT_PRODUCT_ACCELERATOR_LAYOUT_LVS.png)
+
+</details>
+
+[Project presentation](AI_semiconductor_design/Design%20of%20an%20INT4%20Dot%20Product%20Accelerator%20for%20CNN.pdf)
+
+## Sequential MAC and Parallel Computation
+
+The sequential MAC reuses one multiplier and one adder. A 10-bit register stores the running sum and feeds it back for the next accumulation. After reset initializes the accumulator to zero, each clocked update adds one product.
 
 ```text
-Hardware Reuse <-----> Parallel Computation
+ACC_next = ACC_current + zero_extend(Xi * Wi)
+
+Cycle 1: ACC = X0*W0
+Cycle 2: ACC = X0*W0 + X1*W1
+Cycle 3: ACC = X0*W0 + X1*W1 + X2*W2
+Cycle 4: ACC = X0*W0 + X1*W1 + X2*W2 + X3*W3
 ```
 
----
+| Component | Sequential MAC | Parallel Dot Product |
+| --- | --- | --- |
+| 4-bit multipliers | 1 | 4 |
+| 10-bit ripple-carry adders | 1 | 3 |
+| Accumulator register | REG10: 10 D flip-flops | No accumulator feedback |
+| Four-term computation | Four accumulation cycles | One combinational evaluation |
+| Datapath organization | Register feedback | Two-stage adder tree |
+| Main trade-off | Arithmetic hardware reuse | Concurrent arithmetic |
 
-## 3. Overall Architecture
+## 4-bit Multiplier (MUL4)
 
-The same four input and weight pairs are processed using two different architectures.
-
-```text
-Inputs
-X0, X1, X2, X3
-W0, W1, W2, W3
-        |
-        +---------------------------+
-        |                           |
-        v                           v
-Sequential MAC              Parallel Accelerator
-        |                           |
-     1 x MUL4                    4 x MUL4
-        |                           |
-      RCA10                  2-Stage Adder Tree
-        |                           |
-      REG10                       Output
-        |
-     Feedback
-```
-
-Both architectures calculate:
-
-```text
-Y = X0*W0 + X1*W1 + X2*W2 + X3*W3
-```
-
-but differ significantly in hardware utilization, latency, and throughput.
-
----
-
-## 4. INT4 Arithmetic
-
-Each multiplication uses two 4-bit unsigned operands:
-
-```text
-4-bit x 4-bit -> 8-bit product
-```
-
-The maximum 4-bit unsigned value is:
-
-```text
-15
-```
-
-Therefore, the maximum multiplication result is:
-
-```text
-15 x 15 = 225
-```
-
-For four products:
-
-```text
-Maximum Dot Product
-= 4 x 225
-= 900
-```
-
-The required output width can be determined from:
-
-```text
-2^9  = 512
-2^10 = 1024
-
-512 < 900 < 1024
-```
-
-Therefore, a **10-bit datapath** is used for accumulation and adder-tree operations.
-
----
-
-## 5. 4-bit Multiplier - MUL4
-
-The fundamental arithmetic block used in both architectures is a **4-bit x 4-bit unsigned multiplier**.
-
-### 5.1 Structure
-
-The multiplier consists of:
-
-```text
-16 x AND
- 8 x Full Adder
- 4 x Half Adder
-```
-
-The multiplication process is:
-
-```text
-4-bit Input A
-4-bit Input B
-      |
-      v
-Partial Product Generation
-      |
-      | 16 x AND
-      v
-Column Reduction
-      |
-      | HA / FA
-      v
-Carry Propagation
-      |
-      v
-8-bit Product P[7:0]
-```
-
-### 5.2 Partial Product Generation
-
-Each partial product is generated using an AND operation:
+MUL4 multiplies two unsigned 4-bit inputs and produces an 8-bit result. Sixteen AND-based partial products feed a three-stage addition network containing **four half adders and eight full adders**.
 
 ```text
 PP(i,j) = A(i) AND B(j)
-```
 
-For a 4-bit x 4-bit multiplier:
-
-```text
-4 x 4 = 16 partial products
-```
-
-are generated.
-
-### 5.3 Multiplier I/O
-
-```text
-Input A : A[3:0]
-Input B : B[3:0]
-
-Output  : P[7:0]
-```
-
----
-
-## 6. RCA10
-
-A **10-bit Ripple Carry Adder (RCA10)** is used for accumulation and adder-tree operations.
-
-### 6.1 Structure
-
-The RCA10 consists of:
-
-```text
-10 x Full Adder
-```
-
-connected in series:
-
-```text
-FA0 -> FA1 -> FA2 -> FA3 -> ... -> FA9
- |      |      |                   |
- C1     C2     C3                  COUT
-```
-
-Each Full Adder transfers its carry output to the carry input of the next stage.
-
-### 6.2 Operation
-
-For each bit:
-
-```text
-SUM(i) = A(i) XOR B(i) XOR CIN(i)
-```
-
-and the carry is propagated to the next stage.
-
-The final output is:
-
-```text
-SUM[9:0]
-```
-
----
-
-## 7. 8-bit to 10-bit Zero Extension
-
-MUL4 generates an 8-bit product while RCA10 operates on 10-bit operands.
-
-Therefore, the multiplier output is zero-extended.
-
-```text
-MUL4 Output
-
-P7 P6 P5 P4 P3 P2 P1 P0
-```
-
-becomes:
-
-```text
-RCA10 Input
-
-0  0  P7 P6 P5 P4 P3 P2 P1 P0
-```
-
-The connection is:
-
-```text
-B[9]   = VSS
-B[8]   = VSS
-B[7:0] = P[7:0]
-```
-
-Since the multiplication is unsigned, the upper two bits are connected to logic 0.
-
----
-
-## 8. 10-bit Register - REG10
-
-The Sequential MAC requires a register to store the accumulated result.
-
-REG10 consists of:
-
-```text
-10 x D Flip-Flop
-```
-
-with common:
-
-```text
-CLK
-RESET
-```
-
-signals.
-
-The register stores:
-
-```text
-ACC[9:0]
-```
-
-and returns the stored value to RCA10 through the feedback path.
-
----
-
-## 9. Register Reset
-
-An NMOS-based reset path is used to initialize the register output.
-
-Before normal MAC operation:
-
-```text
-ACC = 0
-```
-
-is established.
-
-The basic sequence is:
-
-```text
-RESET asserted
+A[3:0], B[3:0]
       |
-      v
-Q initialized to 0
+16 partial products
       |
-      v
-RESET released
+HA / FA addition network
       |
-      v
-Normal DFF operation
+   P[7:0]
 ```
 
-After reset is released, each DFF stores new accumulator data according to the clock.
+### Multiplier Layout
 
----
+[![MUL4 complete physical layout](MUL4/MUL4_layout.png)](MUL4/MUL4_layout.png)
 
-## 10. Sequential MAC Architecture
+### Complete Multiplier Schematic
 
-The Sequential MAC reuses one multiplier, one RCA10, and one 10-bit register.
+[![MUL4 complete schematic with partial products and addition network](MUL4/MUL4_total_schematic.png)](MUL4/MUL4_total_schematic.png)
 
-### 10.1 Datapath
+<details>
+<summary>Multiplier sub-blocks and internal connections</summary>
+
+**Partial-product schematic**
+
+[![Sixteen partial-product cells](MUL4/MUL4_schematic_bitline_16xMUL1.png)](MUL4/MUL4_schematic_bitline_16xMUL1.png)
+
+**Three-stage addition schematic**
+
+[![MUL4 addition stages](MUL4/MUL4_schematic_stage1%2C2%2C3.png)](MUL4/MUL4_schematic_stage1%2C2%2C3.png)
+
+**AND block layout**
+
+[![MUL4 AND block](MUL4/MUL4_AND_BLOCK.png)](MUL4/MUL4_AND_BLOCK.png)
+
+**Adder block layout**
+
+[![MUL4 adder block](MUL4/MUL4_ADDER_BLOCK.png)](MUL4/MUL4_ADDER_BLOCK.png)
+
+</details>
+
+### Multiplier Simulation
+
+The bus waveform below presents the input operands and product together. In the displayed sequence, B is held at binary 0010 while A changes, and the product bus follows the corresponding multiplication results.
+
+[![MUL4 operand and product bus waveforms](MUL4/MUL4_sim_measurements_analogtodigital.png)](MUL4/MUL4_sim_measurements_analogtodigital.png)
+
+[Detailed MUL4 design and connection tables](MUL4/MUL4_design_project.md)
+
+## Arithmetic Cells
+
+Half adders and full adders form the multiplier reduction network. A chain of ten full adders forms RCA10, with each carry output connected to the next bit's carry input.
 
 ```text
-Xi[3:0] -----+
-             |
-             v
-           MUL4
-             ^
-             |
-Wi[3:0] -----+
-             |
-          P[7:0]
-             |
-      Zero Extension
-             |
-          P[9:0]
-             |
-             v
-           RCA10 <-------------+
-             |                 |
-             v                 |
-           REG10               |
-             |                 |
-             +---- Feedback ---+
+Half adder:
+  SUM  = A XOR B
+  COUT = A AND B
+
+Full adder:
+  SUM  = A XOR B XOR CIN
+  COUT = (A AND B) OR ((A XOR B) AND CIN)
+
+RCA10:
+  FA0 --> FA1 --> ... --> FA9
+           carry propagation
 ```
 
-### 10.2 Accumulation Operation
+<details>
+<summary>Half Adder</summary>
 
-The accumulator performs:
+The half adder produces a sum and carry from two input bits.
+
+**Schematic**
+
+[![Half Adder schematic](HALFADDER/HALFADDER_schematic.png)](HALFADDER/HALFADDER_schematic.png)
+
+**Layout**
+
+[![Half Adder layout](HALFADDER/HALFADDER_layout.png)](HALFADDER/HALFADDER_layout.png)
+
+[Design notes](HALFADDER/HALFADDER_study.md)
+
+</details>
+
+<details>
+<summary>Full Adder</summary>
+
+The full adder adds two data bits and an incoming carry. Its sum and carry outputs support both multiplier reduction and ripple-carry addition.
+
+**Schematic**
+
+[![Full Adder schematic](FULLADDER/FULLADDER_schematic.png)](FULLADDER/FULLADDER_schematic.png)
+
+**Layout**
+
+[![Full Adder layout](FULLADDER/FULLADDER_layout.png)](FULLADDER/FULLADDER_layout.png)
+
+[Design notes](FULLADDER/FULLADDER_study.md)
+
+</details>
+
+<details>
+<summary>Full-adder routing and metal-layer views</summary>
+
+**Connection view**
+
+[![Full-adder connections](FULLADDER/FULLADDER_connection.png)](FULLADDER/FULLADDER_connection.png)
+
+**Metal 3 view**
+
+[![Full-adder Metal 3 routing](FULLADDER/FULLADDER_metal3.png)](FULLADDER/FULLADDER_metal3.png)
+
+**Metal 4 view**
+
+[![Full-adder Metal 4 routing](FULLADDER/FULLADDER_metal4.png)](FULLADDER/FULLADDER_metal4.png)
+
+</details>
+
+## CMOS Logic Cells
+
+The gate library supplies inversion, partial-product generation, sum logic, carry logic, and the logic functions used by storage and selection circuits. Expand a cell to see its original schematic and layout.
+
+<details>
+<summary>Inverter</summary>
+
+A complementary PMOS/NMOS pair implements logical inversion.
+
+**Schematic**
+
+[![Inverter schematic](Inverter/inverter_schematic.png)](Inverter/inverter_schematic.png)
+
+**Layout**
+
+[![Inverter layout](Inverter/inverter_LVS.png)](Inverter/inverter_LVS.png)
+
+[Design notes](Inverter/Inverter_study.md)
+
+</details>
+
+<details>
+<summary>NAND</summary>
+
+The NAND cell implements an inverted AND function.
+
+**Schematic**
+
+[![NAND schematic](NAND/NAND_schematic.png)](NAND/NAND_schematic.png)
+
+**Layout**
+
+[![NAND layout](NAND/NAND_layout.png)](NAND/NAND_layout.png)
+
+[Design notes](NAND/NAND_study.md)
+
+</details>
+
+<details>
+<summary>NOR</summary>
+
+The NOR cell implements an inverted OR function.
+
+**Schematic**
+
+[![NOR schematic](NOR/NOR_schematic.png)](NOR/NOR_schematic.png)
+
+**Layout**
+
+[![NOR layout](NOR/NOR_layout.png)](NOR/NOR_layout.png)
+
+[Design notes](NOR/NOR_study.md)
+
+</details>
+
+<details>
+<summary>AND</summary>
+
+AND logic generates the multiplier's one-bit partial products.
+
+**Schematic**
+
+[![AND schematic](AND/AND_schematic.png)](AND/AND_schematic.png)
+
+**Layout**
+
+[![AND layout](AND/AND_layout.png)](AND/AND_layout.png)
+
+[Design notes](AND/AND_study.md)
+
+</details>
+
+<details>
+<summary>OR</summary>
+
+OR logic combines carry-generation terms.
+
+**Schematic**
+
+[![OR schematic](OR/OR_schematic.png)](OR/OR_schematic.png)
+
+**Layout**
+
+[![OR layout](OR/OR_layout.png)](OR/OR_layout.png)
+
+[Design notes](OR/OR_study.md)
+
+</details>
+
+<details>
+<summary>XOR</summary>
+
+XOR logic generates half-adder and full-adder sum terms.
+
+**Schematic**
+
+[![XOR schematic](XOR/XOR_schematic.png)](XOR/XOR_schematic.png)
+
+**Layout**
+
+[![XOR layout](XOR/XOR_layout.png)](XOR/XOR_layout.png)
+
+[Design notes](XOR/XOR_study.md)
+
+</details>
+
+## Sequential Logic
+
+The storage circuits progress from cross-coupled SR latches to gated latches and an edge-triggered D flip-flop. The DFF design notes describe a master–slave structure with opposite clock phases. Ten D flip-flops provide the register width used by the sequential MAC accumulator.
+
+<details>
+<summary>NAND SR Latch</summary>
+
+Cross-coupled NAND gates provide a state-holding feedback structure.
+
+**Schematic**
+
+[![NAND SR Latch schematic](SR_Latch_NAND/SR_LATCH_NAND_schematic.png)](SR_Latch_NAND/SR_LATCH_NAND_schematic.png)
+
+**Layout**
+
+[![NAND SR Latch layout](SR_Latch_NAND/SR_LATCH_NAND_layout.png)](SR_Latch_NAND/SR_LATCH_NAND_layout.png)
+
+[Design notes](SR_Latch_NAND/SR_Latch_NAND_study.md)
+
+</details>
+
+<details>
+<summary>NOR SR Latch</summary>
+
+Cross-coupled NOR gates provide the NOR-based SR storage circuit.
+
+**Schematic**
+
+[![NOR SR Latch schematic](SR_Latch_NOR/SRLATCHNOR_schematic.png)](SR_Latch_NOR/SRLATCHNOR_schematic.png)
+
+**Layout**
+
+[![NOR SR Latch layout](SR_Latch_NOR/SRLATCHNOR_layout.png)](SR_Latch_NOR/SRLATCHNOR_layout.png)
+
+[Design notes](SR_Latch_NOR/SR_Latch_NOR_study.md)
+
+</details>
+
+<details>
+<summary>Gated SR Latch</summary>
+
+Gating controls when the set/reset inputs affect the stored state.
+
+**Schematic**
+
+[![Gated SR Latch schematic](GATED_SR_Latch/GATEDSRLATCH_schematic.png)](GATED_SR_Latch/GATEDSRLATCH_schematic.png)
+
+**Layout**
+
+[![Gated SR Latch layout](GATED_SR_Latch/GATEDSRLATCH_layoutLVS.png)](GATED_SR_Latch/GATEDSRLATCH_layoutLVS.png)
+
+[Design notes](GATED_SR_Latch/GATED_SR_Latch_study.md)
+
+</details>
+
+<details>
+<summary>Gated D Latch</summary>
+
+The D latch transfers input data while enabled and holds its state otherwise.
+
+**Schematic**
+
+[![Gated D Latch schematic](GATED_D_Latch/GATEDDLATCH_schematic.png)](GATED_D_Latch/GATEDDLATCH_schematic.png)
+
+**Layout**
+
+[![Gated D Latch layout](GATED_D_Latch/GATEDDLATCH_layout.png)](GATED_D_Latch/GATEDDLATCH_layout.png)
+
+[Design notes](GATED_D_Latch/GATED_D_Latch_study.md)
+
+</details>
+
+<details>
+<summary>D Flip-Flop</summary>
+
+The master–slave DFF captures input data at the active clock edge and supplies the sequential storage element.
+
+**Schematic**
+
+[![D Flip-Flop schematic](D_FF/DFF_schematic.png)](D_FF/DFF_schematic.png)
+
+**Layout**
+
+[![D Flip-Flop layout](D_FF/DFF_layout.png)](D_FF/DFF_layout.png)
+
+[Design notes](D_FF/D_FF_study.md)
+
+</details>
+
+## Multiplexers
+
+Multiplexers select one data input for an output path. The library includes both 2:1 and 4:1 designs.
 
 ```text
-ACC_next = ACC_current + Xi*Wi
+2:1 MUX:
+  Y = (A AND NOT(S)) OR (B AND S)
+
+4:1 MUX:
+  Two selection bits choose one of four inputs.
 ```
 
-with:
+<details>
+<summary>2:1 Multiplexer</summary>
+
+The select signal chooses between two data inputs.
+
+**Schematic**
+
+[![2:1 Multiplexer schematic](2MUX/MUX_schematic.png)](2MUX/MUX_schematic.png)
+
+**Layout**
+
+[![2:1 Multiplexer layout](2MUX/MUX_layout_LVS.png)](2MUX/MUX_layout_LVS.png)
+
+[Design notes](2MUX/2MUX.study.md)
+
+</details>
+
+<details>
+<summary>4:1 Multiplexer</summary>
+
+The four-input multiplexer extends data selection to four source paths.
+
+**Schematic**
+
+[![4:1 Multiplexer schematic](4MUX/4_1_MUX_schematic.png)](4MUX/4_1_MUX_schematic.png)
+
+**Layout**
+
+[![4:1 Multiplexer layout](4MUX/4_1_MUX_layout.png)](4MUX/4_1_MUX_layout.png)
+
+</details>
+
+## Parameterized Cell (PCell)
+
+The PCell study develops reusable MOS layout geometry controlled by length, width, and FINGER parameters. Horizontal and vertical stretch operations adjust dimensions; repetition generates multi-finger structures and adjusts contacts.
+
+<details>
+<summary>PCell geometry and parameter controls</summary>
+
+**NMOS layout**
+
+[![NMOS parameterized-cell layout](Pcell/NMOSPcell.png)](Pcell/NMOSPcell.png)
+
+**Stretch and finger parameter summary**
+
+[![PCell length width and finger configuration](Pcell/Pcell_stretch_fingerfinalsummary.png)](Pcell/Pcell_stretch_fingerfinalsummary.png)
+
+[Detailed PCell study](Pcell/Pcell_study.md)
+
+</details>
+
+## Physical Design and Verification
+
+The project follows a full-custom flow from transistor-level schematics and functional simulation to layout, DRC, LVS, parasitic extraction, and timing evaluation. The physical-design notes discuss hierarchical placement, power rails, multi-layer routing, and pin mapping.
+
+For the adder network, exchanging logically equivalent A/B input mappings can simplify wire crossings while preserving the sum and carry functions. The routing strategy separates local cell connections from longer inter-block routes.
+
+<details>
+<summary>Additional DRC and LVS screenshots</summary>
+
+**MUL4 DRC**
+
+[![MUL4 DRC view](MUL4/4MUL_DRC.png)](MUL4/4MUL_DRC.png)
+
+**MUL4 LVS**
+
+[![MUL4 LVS view](MUL4/MUL4_LVS.png)](MUL4/MUL4_LVS.png)
+
+**DFF LVS**
+
+[![DFF LVS view](D_FF/DFF_LVS.png)](D_FF/DFF_LVS.png)
+
+**4:1 MUX DRC**
+
+[![4 to 1 MUX DRC view](4MUX/4_1_MUX_layout_DRC.png)](4MUX/4_1_MUX_layout_DRC.png)
+
+**4:1 MUX LVS**
+
+[![4 to 1 MUX LVS view](4MUX/4_1_MUX_layout_LVS.png)](4MUX/4_1_MUX_layout_LVS.png)
+
+</details>
+
+## Reported Timing Comparison
+
+The project's architecture comparison reports the following results for its test case.
+
+| Metric | Sequential MAC | Parallel Dot Product |
+| --- | ---: | ---: |
+| Four-product processing | Four cycles | One evaluation |
+| Reported cycle/evaluation delay | 1.750 ns | 0.814 ns |
+| Reported four-operation completion time | 5.330 ns | 0.814 ns |
+
+The reported multiplier delay is approximately **0.385 ns**. Using the dot-product delay of 0.8142 ns, the reported completion-time ratio is approximately **6.55×** (5.330 / 0.8142). The comparison illustrates the trade-off between hardware reuse and parallel computation.
+
+Area, average power, throughput, and energy per operation provide complementary ways to evaluate the two architectures.
+
+## Repository Organization
 
 ```text
-ACC_initial = 0
+FULLCUSTOM_IC_DESIGN_PROJECT/
+├── AI_semiconductor_design/   Dot-product accelerator and presentation
+├── MUL4/                      4-bit multiplier and internal blocks
+├── HALFADDER/                 Half-adder design
+├── FULLADDER/                 Full-adder design and routing views
+├── Inverter/                  CMOS inverter
+├── NAND/  NOR/  AND/  OR/  XOR/
+├── SR_Latch_NAND/  SR_Latch_NOR/
+├── GATED_SR_Latch/  GATED_D_Latch/
+├── D_FF/                      D flip-flop
+├── 2MUX/  4MUX/               Multiplexers
+├── Pcell/                     Parameterized MOS layout study
+├── data/                      Packaged Cadence design libraries
+└── README.md
 ```
 
-For four products:
-
-```text
-Cycle 1:
-ACC = X0*W0
-
-Cycle 2:
-ACC = X0*W0 + X1*W1
-
-Cycle 3:
-ACC = X0*W0 + X1*W1 + X2*W2
-
-Cycle 4:
-ACC = X0*W0 + X1*W1 + X2*W2 + X3*W3
-```
-
-Therefore:
-
-```text
-Final ACC = Dot Product Result
-```
-
-### 10.3 Sequential Operation
-
-| Cycle | Input | Accumulated Result |
-|---:|---|---|
-| 1 | X0, W0 | X0*W0 |
-| 2 | X1, W1 | X0*W0 + X1*W1 |
-| 3 | X2, W2 | X0*W0 + X1*W1 + X2*W2 |
-| 4 | X3, W3 | X0*W0 + X1*W1 + X2*W2 + X3*W3 |
-
-The minimum clock period is approximately constrained by:
-
-```text
-T_CLK >= t_MUL4 + t_RCA10 + t_setup
-```
-
-The four-term latency is approximately:
-
-```text
-T_MAC ~= 4 x T_CLK
-```
-
----
-
-## 11. Parallel Dot Product Accelerator
-
-The Parallel Dot Product Accelerator computes all four multiplications simultaneously.
-
-### 11.1 Hardware Structure
-
-The accelerator consists of:
-
-```text
-4 x MUL4
-3 x RCA10
-```
-
-### 11.2 Datapath
-
-```text
-X0,W0 ---> MUL4 ---> P0 ---+
-                            |
-                            +---> RCA10 ---> S01 ---+
-                            |                       |
-X1,W1 ---> MUL4 ---> P1 ---+                       |
-                                                    +---> RCA10 ---> Y
-X2,W2 ---> MUL4 ---> P2 ---+                       |
-                            |                       |
-                            +---> RCA10 ---> S23 ---+
-                            |
-X3,W3 ---> MUL4 ---> P3 ---+
-```
-
-All four products are generated simultaneously:
-
-```text
-P0 = X0*W0
-P1 = X1*W1
-P2 = X2*W2
-P3 = X3*W3
-```
-
----
-
-## 12. 2-Stage Adder Tree
-
-The four multiplier outputs are reduced using a two-stage RCA10 adder tree.
-
-### 12.1 Stage 1
-
-Two additions are performed simultaneously:
-
-```text
-S01 = P0 + P1
-S23 = P2 + P3
-```
-
-Structure:
-
-```text
-P0 ---+
-      +---> RCA10 ---> S01
-P1 ---+
-
-
-P2 ---+
-      +---> RCA10 ---> S23
-P3 ---+
-```
-
-### 12.2 Stage 2
-
-The two intermediate results are added:
-
-```text
-Y = S01 + S23
-```
-
-Therefore:
-
-```text
-Y = P0 + P1 + P2 + P3
-```
-
-and:
-
-```text
-Y = X0*W0 + X1*W1 + X2*W2 + X3*W3
-```
-
-The approximate critical path is:
-
-```text
-T_DP ~= t_MUL4 + 2*t_RCA10
-```
-
-Unlike the Sequential MAC, no accumulator feedback is required for the 4-term dot-product computation.
-
----
-
-## 13. Sequential MAC vs Parallel Accelerator
-
-| Characteristic | Sequential MAC | Parallel Dot Product Accelerator |
-|---|---|---|
-| MUL4 | 1 | 4 |
-| RCA10 | 1 | 3 |
-| REG10 | 1 | Not required in combinational datapath |
-| Feedback | Required | Not required |
-| Processing | Sequential | Parallel |
-| Simultaneous multiplications | 1 | 4 |
-| 4-term operation | 4 cycles | 1 combinational evaluation |
-| Hardware reuse | High | Low |
-| Parallelism | Low | High |
-
-The fundamental architectural trade-off is:
-
-```text
-Sequential MAC
-    |
-    +--> Hardware reuse
-    +--> Smaller arithmetic hardware
-    +--> Multiple clock cycles
-
-
-Parallel Accelerator
-    |
-    +--> Hardware parallelism
-    +--> More arithmetic hardware
-    +--> Reduced computation latency
-```
-
----
-
-## 14. Full-Custom IC Design Flow
-
-The project follows a full-custom design flow from circuit implementation to physical verification.
-
-```text
-Transistor-Level Schematic
-          |
-          v
-Pre-Layout Simulation
-          |
-          v
-Full-Custom Layout
-          |
-          v
-DRC
-          |
-          v
-LVS
-          |
-          v
-PEX
-          |
-          v
-Post-Layout Simulation
-          |
-          v
-PPA Evaluation
-```
-
-### DRC
-
-**Design Rule Check** verifies that the physical layout satisfies the process design rules.
-
-### LVS
-
-**Layout Versus Schematic** verifies that the extracted layout connectivity matches the schematic.
-
-### PEX
-
-**Parasitic Extraction** extracts parasitic resistance and capacitance for post-layout evaluation.
-
----
-
-## 15. Hierarchical Full-Custom Design
-
-The complete accelerator was designed hierarchically.
-
-```text
-Basic CMOS Gates
-        |
-        +--> INV
-        +--> NAND
-        +--> NOR
-        +--> AND
-        +--> XOR
-        |
-        v
-     HA / FA
-        |
-        +----------------+
-        |                |
-        v                v
-      MUL4             RCA10
-        |                |
-        +--------+-------+
-                 |
-               REG10
-                 |
-        +--------+---------+
-        |                  |
-        v                  v
-Sequential MAC     Parallel Accelerator
-```
-
-Each block can be independently:
-
-```text
-Designed
-   ->
-Simulated
-   ->
-Laid Out
-   ->
-DRC Checked
-   ->
-LVS Verified
-```
-
-before top-level integration.
-
----
-
-## 16. Layout Routing Strategy
-
-The physical implementation uses hierarchical placement and multi-layer metal routing.
-
-| Metal Layer | Main Usage |
-|---|---|
-| M1 | Cell internal connection, VDD/VSS rail, pin access |
-| M2 | AND input bus and short/local signals |
-| M3 | Crossing bus and vertical/inter-row connection |
-| M4 | AND-to-Adder partial-product routing and congestion relief |
-| M5 | Complex inter-block crossing reserve |
-| M6 | MAC/top-level global routing reserve |
-| M7 | Final congestion resolution or global-net reserve |
-
-Higher metal layers were introduced when long-distance routing or routing congestion required additional routing resources.
-
----
-
-## 17. Layout Mapping Optimization
-
-One issue encountered during multiplier layout was routing congestion caused by input-net crossings.
-
-For a Half Adder:
-
-```text
-SUM   = A XOR B
-CARRY = A AND B
-```
-
-Because the A and B inputs are commutative:
-
-```text
-HA(A,B) = HA(B,A)
-```
-
-the input mapping can be exchanged without changing the logical function.
-
-For a Full Adder:
-
-```text
-SUM = X XOR Y XOR CIN
-
-CARRY = (X AND Y) OR ((X XOR Y) AND CIN)
-```
-
-X and Y can be exchanged:
-
-```text
-FA(X,Y,CIN) = FA(Y,X,CIN)
-```
-
-while `CIN` remains unchanged.
-
-This property was used to optimize the physical pin mapping.
-
-```text
-Before
-
-Net A ------\
-             \
-              X---- Cell
-             /
-Net B ------/
-
-
-After
-
-Net A ------------ Cell
-Net B ------------ Cell
-```
-
-The optimized mapping reduces:
-
-```text
-Metal Crossing
-Routing Length
-Routing Congestion
-```
-
-while preserving logical functionality.
-
-The modified connectivity was verified using LVS.
-
----
-
-## 18. Simulation Results
-
-### 18.1 MUL4
-
-The 4-bit multiplier was verified using transient simulation.
-
-The measured critical-path propagation delay was approximately:
-
-```text
-t_MUL4 ~= 0.385 ns
-```
-
----
-
-### 18.2 Sequential MAC
-
-A representative accumulation sequence was:
-
-```text
-CLK 1 -> ACC = 15
-CLK 2 -> ACC = 29
-CLK 3 -> ACC = 254
-CLK 4 -> ACC = 255
-```
-
-Each multiplication result is processed in a different clock cycle because the updated accumulator value must be stored and returned through the feedback path.
-
----
-
-### 18.3 Parallel Dot Product Accelerator
-
-The four MUL4 blocks operate simultaneously.
-
-Their outputs propagate through the two-stage RCA10 adder tree.
-
-The measured propagation delay was approximately:
-
-```text
-t_DP ~= 0.8142 ns
-```
-
----
-
-## 19. Experimental Comparison
-
-The reported test results are:
-
-| Metric | Sequential MAC | Parallel Dot Product Accelerator |
-|---|---:|---:|
-| Operation Structure | Sequential | Parallel |
-| Multiplications per Cycle/Evaluation | 1 | 4 |
-| Processing of 4 Products | 4 Cycles | 1 Evaluation |
-| Reported Cycle/Evaluation Delay | 1.750 ns | 0.814 ns |
-| Reported 4-Operation Completion Time | 5.330 ns | 0.814 ns |
-
-Using the reported completion times:
-
-```text
-Execution-Time Ratio
-= 5.330 / 0.8142
-~= 6.55
-```
-
-Therefore, for the reported test case:
-
-```text
-Parallel Accelerator completion time
-~= 1 / 6.5 of Sequential MAC completion time
-```
-
-The performance improvement is obtained by increasing hardware parallelism.
-
----
-
-## 20. PPA Evaluation Metrics
-
-The two architectures can be evaluated using:
-
-```text
-PPA + Throughput + Energy/Operation
-```
-
-### 20.1 Area
-
-Layout area:
-
-```text
-Area = Width x Height
-```
-
----
-
-### 20.2 Propagation Delay
-
-Propagation delay can be measured using the 50-percent crossing points of the input and output.
-
-```text
-t_pd = t_output(50%) - t_input(50%)
-```
-
-Measured values reported in the project include:
-
-```text
-MUL4:
-t_pd ~= 0.385 ns
-
-Parallel Dot Product Accelerator:
-t_pd ~= 0.8142 ns
-```
-
----
-
-### 20.3 Average Power
-
-Average power is obtained from the supply voltage and average supply current.
-
-For constant VDD:
-
-```text
-P_avg = VDD x I_avg
-```
-
-where:
-
-```text
-I_avg = average supply current over the measurement interval
-```
-
----
-
-### 20.4 Throughput
-
-Throughput is defined as:
-
-```text
-Throughput = Number of Operations / Execution Time
-```
-
-The Parallel Accelerator performs four multiplications simultaneously, whereas the Sequential MAC performs one multiplication per accumulation cycle.
-
----
-
-### 20.5 Energy per Operation
-
-Energy can be approximated as:
-
-```text
-E_total ~= P_avg x T_execution
-```
-
-Energy per operation is then:
-
-```text
-E_op = E_total / N_ops
-```
-
-Therefore:
-
-```text
-E_op ~= (P_avg x T_execution) / N_ops
-```
-
----
-
-## 21. Scalability
-
-The architecture can be extended by increasing the number of processing elements.
-
-```text
-1 PE -> 1 MAC operation / cycle
-2 PE -> 2 MAC operations / cycle
-4 PE -> 4 MAC operations / cycle
-8 PE -> 8 MAC operations / cycle
-```
-
-For `N` operations and `P` processing elements, the ideal number of cycles is approximately:
-
-```text
-Cycles = ceil(N / P)
-```
-
-For example, for an 8-term dot product:
-
-```text
-1 PE -> 8 cycles
-2 PE -> 4 cycles
-4 PE -> 2 cycles
-8 PE -> 1 cycle
-```
-
-Increasing parallelism can improve throughput but also increases:
-
-- Multiplier count
-- Adder count
-- Routing complexity
-- Layout area
-- Power consumption
-
-Therefore, architecture selection requires balancing:
-
-```text
-Area <-----> Power <-----> Performance
-```
-
----
-
-## 22. Key Design Trade-Off
-
-The two architectures represent different optimization directions.
-
-### Sequential MAC
-
-```text
-MUL4
- |
- v
-RCA10
- |
- v
-REG10
- |
- +------ Feedback ------+
-```
-
-Main characteristics:
-
-- Single multiplier reuse
-- Single RCA10 reuse
-- Register-based accumulation
-- Feedback datapath
-- Four cycles for a 4-term dot product
-
-### Parallel Dot Product Accelerator
-
-```text
-MUL4 ---+
-MUL4 ---+
-        +--> 2-Stage Adder Tree --> Y
-MUL4 ---+
-MUL4 ---+
-```
-
-Main characteristics:
-
-- Four simultaneous multipliers
-- Three RCA10 blocks
-- Two-stage adder tree
-- No sequential accumulator feedback
-- Single combinational evaluation for the 4-term dot product
-
-The fundamental design trade-off is:
-
-```text
-Hardware Reuse <-----> Hardware Parallelism
-```
-
-The final architecture should be evaluated based on:
-
-```text
-Area
-Power
-Delay
-Throughput
-Energy per Operation
-```
-
----
-
-## 23. Project Structure
-
-```text
-INT4-Dot-Product-Accelerator/
-|
-+-- Basic_Cells/
-|   +-- INV/
-|   +-- NAND/
-|   +-- NOR/
-|   +-- AND/
-|   +-- XOR/
-|   +-- HA/
-|   +-- FA/
-|   +-- DFF/
-|
-+-- Multiplier/
-|   +-- MUL4/
-|
-+-- Adder/
-|   +-- RCA10/
-|
-+-- Register/
-|   +-- REG10/
-|
-+-- Sequential_MAC/
-|
-+-- Parallel_Dot_Product_Accelerator/
-|
-+-- Simulation/
-|
-+-- Layout/
-|
-+-- DRC_LVS/
-|
-+-- README.md
-```
-
----
-
-## 24. Tools
-
-- Cadence Virtuoso
-  - Schematic Editor
-  - Layout Editor
-  - ADE
-- Spectre
-  - Transient Simulation
-  - Timing Analysis
-  - Power Analysis
-- DRC
-- LVS
-- PEX
-
----
-
-## 25. Conclusion
-
-This project implemented an **INT4 CNN Dot Product Accelerator using a Full-Custom IC Design flow** and compared two architectures:
-
-```text
-Sequential MAC
-        vs
-Parallel Dot Product Accelerator
-```
-
-The design hierarchy is:
-
-```text
-Basic Gates
-    |
-    v
-HA / FA / DFF
-    |
-    v
-MUL4 / RCA10 / REG10
-    |
-    +----------------------+
-    |                      |
-    v                      v
-Sequential MAC      Parallel Accelerator
-```
-
-The Sequential MAC computes products over multiple clock cycles using accumulator feedback.
-
-The Parallel Dot Product Accelerator computes four products simultaneously and combines them using a two-stage adder tree.
-
-The project demonstrates the fundamental hardware-architecture trade-off:
-
-```text
-Sequential Architecture
--> Hardware Reuse
--> Multiple Clock Cycles
-
-Parallel Architecture
--> Hardware Parallelism
--> Reduced Computation Latency
-```
-
-The final architecture should therefore be selected based on the target requirements for:
-
-```text
-Area
-Power
-Performance
-Throughput
-Energy per Operation
-```
+Design archives: [DIGITAL01.zip](data/DIGITAL01.zip) · [Dot_product_accelerator.zip](data/Dot_product_accelerator.zip)
